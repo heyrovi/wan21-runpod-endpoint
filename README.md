@@ -9,7 +9,7 @@ RunPod Serverless Endpoint für WAN 2.1 (Stable Video Diffusion) Video-Generieru
 - Memory optimiert für GPU efficiency
 
 ## Parameters
-- `prompt`: Text description
+- `prompt`: Text descriptions
 - `num_frames`: 14-25 frames
 - `motion_bucket_id`: 1-255 (motion intensity)
 - `fps`: Output frame rate
