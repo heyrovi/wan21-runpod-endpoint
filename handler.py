@@ -17,28 +17,42 @@ logger = logging.getLogger(__name__)
 
 # Global variables
 pipeline = None
-device = "cuda" if torch.cuda.is_available() else "cpu"
+
+def get_device():
+    """Get available device with fallback"""
+    if torch.cuda.is_available():
+        return f"cuda:{torch.cuda.current_device()}"
+    else:
+        return "cpu"
 
 def load_wan21_pipeline():
-    """Load WAN 2.1 Pipeline"""
+    """Load WAN 2.1 Pipeline with fixed device handling"""
     global pipeline
     
     try:
         logger.info("Loading WAN 2.1 (Stable Video Diffusion) pipeline...")
         
+        device = get_device()
+        logger.info(f"Using device: {device}")
+        
         # Load the pipeline
         pipeline = StableVideoDiffusionPipeline.from_pretrained(
             "stabilityai/stable-video-diffusion-img2vid-xt",
-            torch_dtype=torch.float16,
-            variant="fp16",
+            torch_dtype=torch.float16 if device.startswith('cuda') else torch.float32,
+            variant="fp16" if device.startswith('cuda') else None,
             use_safetensors=True
         )
         
         pipeline = pipeline.to(device)
         
-        # Memory optimizations
-        pipeline.enable_model_cpu_offload()
-        pipeline.enable_vae_slicing()
+        # Memory optimizations (only if CUDA)
+        if device.startswith('cuda'):
+            try:
+                pipeline.enable_model_cpu_offload()
+                pipeline.enable_vae_slicing()
+                logger.info("Memory optimizations enabled")
+            except Exception as e:
+                logger.warning(f"Could not enable some optimizations: {e}")
         
         logger.info("WAN 2.1 pipeline loaded successfully!")
         return True
@@ -177,22 +191,33 @@ def encode_video_base64(file_path: str) -> str:
         logger.error(f"Error encoding video: {str(e)}")
         raise e
 
+def cleanup_memory():
+    """Clean up GPU memory"""
+    try:
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except Exception as e:
+        logger.warning(f"Memory cleanup warning: {e}")
+
 def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     """Main RunPod handler"""
     
     try:
         job_input = job.get('input', {})
         
-        # Extract parameters
+        # Extract parameters with defaults
         prompt = job_input.get('prompt', 'A beautiful cinematic scene')
-        num_frames = job_input.get('num_frames', 25)
+        num_frames = min(job_input.get('num_frames', 16), 25)  # Limit frames
         num_inference_steps = job_input.get('num_inference_steps', 25)
         min_guidance_scale = job_input.get('min_guidance_scale', 1.0)
         max_guidance_scale = job_input.get('max_guidance_scale', 3.0)
         fps = job_input.get('fps', 6)
         motion_bucket_id = job_input.get('motion_bucket_id', 127)
         noise_aug_strength = job_input.get('noise_aug_strength', 0.02)
-        decode_chunk_size = job_input.get('decode_chunk_size', 8)
+        decode_chunk_size = job_input.get('decode_chunk_size', 4)  # Reduced for memory
         seed = job_input.get('seed', None)
         width = job_input.get('width', 1024)
         height = job_input.get('height', 576)
@@ -208,6 +233,10 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 logger.warning(f"Could not decode input image: {str(e)}")
         
         logger.info(f"Starting video generation: '{prompt}'")
+        logger.info(f"Parameters: {num_frames} frames, {width}x{height}, motion={motion_bucket_id}")
+        
+        # Clean memory before generation
+        cleanup_memory()
         
         # Generate video
         frames = generate_video(
@@ -237,6 +266,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         
         # Cleanup
         os.unlink(video_path)
+        cleanup_memory()
         
         return {
             "success": True,
@@ -249,19 +279,29 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 "height": height,
                 "fps": fps,
                 "motion_bucket_id": motion_bucket_id
-            }
+            },
+            "model": "Stable Video Diffusion img2vid-xt"
         }
         
     except Exception as e:
         logger.error(f"Handler error: {str(e)}")
+        cleanup_memory()
         return {
             "success": False,
             "error": str(e),
-            "error_type": type(e).__name__
+            "error_type": type(e).__name__,
+            "model": "Stable Video Diffusion img2vid-xt"
         }
 
 if __name__ == "__main__":
     logger.info("Initializing WAN 2.1 handler...")
+    
+    # Print system info
+    logger.info(f"PyTorch version: {torch.__version__}")
+    logger.info(f"CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        logger.info(f"CUDA device: {torch.cuda.get_device_name()}")
+        logger.info(f"CUDA memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
     
     if load_wan21_pipeline():
         logger.info("Starting RunPod serverless handler...")
