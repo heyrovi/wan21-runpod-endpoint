@@ -12,7 +12,7 @@ import imageio
 import logging
 import random
 
-# Setup logging
+# Setup loggingk
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
